@@ -1,0 +1,14 @@
+snowball_path_holder1.npy
+snowball_path_holder2.npy
+snowball_path_holder_but_cpu_1.npy
+snowball_path_holder_but_cpu_2.npy
+distributed_train.py
+deep_learning_option_2.ipynb 
+deep_learning_option_1.ipynb
+cupy_dataset.py
+python_env 
+data 
+.idea 
+.conda 
+__pycache__
+mc_pricing.ipynb
