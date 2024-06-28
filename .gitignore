@@ -12,3 +12,6 @@ data
 .conda 
 __pycache__
 mc_pricing.ipynb
+desktop.ini
+smodel.py
+.gitignore
