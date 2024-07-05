@@ -12,6 +12,8 @@ from numba import cuda
 import os, os.path
 from pathlib import Path
 
+from datetime import datetime
+
 # code was written with batch of size 1 in mind and number of data points gets a bit off the inputed amount
 # if the division ends in a decimal
 
@@ -77,7 +79,7 @@ def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
                             break
             else: # if mald
                 break
-        
+            
         if not earlyexit:       # to prevent early exit getting out of bdds error
             # did not get knocked up or down
             price = pot[batch_id]
@@ -93,13 +95,17 @@ def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
 
 #               make sure max_len is large enough or else divide by zero error occurs (at least 100 batches must be run)
 limiter = True
-max_len = 1000000                 # hundo thousand data points, final speed is ~40 min for 1000 data.
+
+###              IMPORTANT VARAIBLE!!!!!
+max_len = 1000000                    # hundo thousand data points, final speed is ~40 min for 1000 data.
 # max_len = 100                 
+# max_len = 1000
 number_path = 500000
 batch = 1
-threads = 512
+    # i dont belive # of threads has like any impact on how fast it runs
+# threads = 256                     # total amount of suportable threads is arond 8-900. 256 supports 3 programs runing at same time
+threads = 128           
 seed  =1999 
-num = 0
 max_length = max_len
 N_PATHS = number_path
 N_STEPS = 365
@@ -123,7 +129,10 @@ num_threads = threads
 Xss = []
 Yss = []
 path = Path(__file__).parent.absolute()
+                    ###          IMPORTANT VARAIBLE!!!!!
 folder = "snow_data_tensor_train"
+# folder = "snow_data_tensor_test"              
+# folder = "snow_data_tensor"
 dir = f"{path}\{folder}" 
 
 print("\nPRINGITN CURRENT DIR", dir)
@@ -135,9 +144,11 @@ print("Adding files starting from", currnum, "\n")
 
 start = 1
 if limiter:
-    start = currnum
+    start = currnum         ## equivalent to saved i
 
 s = time.time()
+now = datetime.now()
+print(f"current time is: {now}")
 
 for i in range(start,max_length+1):
         randoms = cupy.random.normal(0,1, N_BATCH * N_PATHS * N_STEPS, dtype= cupy.float32)
@@ -176,6 +187,11 @@ for i in range(start,max_length+1):
         # torch.save(from_dlpack(Y.toDlpack()), f"snow_data/snowY_data/tensor{i}.pt")
 
         # if(i%i==0):                   # for testing purposed only!!
+        #not nesting the if statements so that first check can be easily commented out if run is very fast
+        if(i%(percent/10)==0):
+            e = time.time()
+            currnum = len(os.listdir(dir))//2+1
+            print(currnum -1 + (i/(percent))%1, "percent of the way there! Time is now:", (e-s)/60, "minutes")
         if(i%percent==0):
             if limiter:
                 if currnum > percenter:
@@ -224,27 +240,28 @@ for i in range(start,max_length+1):
                     # Xss.pop()
                     # Yss.pop()
                     break
-            e = time.time()
-            print(i/(percent), "percent of the way there! Time is now:", (e-s)/60/60, "hours")
-            # print(i/(percent), "percent of the way there! Time is now:", e-s, "secs")
-            print("now saving tsnowX_{}.pt".format(currnum) )
+            
             tensorX = np.array(Xss)
             tensorY = np.array(Yss)
             tensorX = torch.Tensor(tensorX)
             tensorY = torch.Tensor(tensorY)
+            e = time.time()
+            currnum = len(os.listdir(dir))//2+1         #equivalent to curnum+=1 but allows for paralelel running
+            # print(i/(percent), "percent of the way there! Time is now:", e-s, "secs")
+            print(currnum, "percent of the way there! Time is now:", (e-s)/60/60, "hours")
+            print(f"current time is: {now}")
+            print("now saving tsnowX_{}.pt\n".format(currnum) )
             torch.save(tensorX, f"{dir}\\tsnowX_{currnum}.pt")
             torch.save(tensorY, f"{dir}\\tsnowY_{currnum}.pt")
             Xss.clear()
             Yss.clear()
-            currnum += 1
-        num+=1
-        # print((from_dlpack(X.toDlpack()), from_dlpack(Y.toDlpack()))) 
+            # currnum += 1
 
 v = output.mean()
 cuda.synchronize()
 e = time.time()
 print("done!!! Yuri!!! :yuristar:")
-print('time', e-s, 'v', v)
+print('time', (e-s)/60/60, 'hours')
 
 
 #           may need to use if percent doesn't end on 100
