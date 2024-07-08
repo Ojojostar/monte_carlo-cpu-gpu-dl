@@ -21,7 +21,7 @@ from datetime import datetime
 @cuda.jit               # defualt GPU
 def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
                                     d_normals, snowball_path_holder, MONTHS,
-                                    N_STEPS, N_PATHS, N_BATCH):
+                                    N_STEPS, N_PATHS, N_BATCH, min_b):
     
 
     # for shared memory (non)optimization
@@ -43,8 +43,8 @@ def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
         mald = False
         for t in range(N_STEPS):
             # pre shared memory b_motion    
-            #                                                   
-            b_motion = d_normals[path_id + batch_id * N_PATHS +  t * N_PATHS * N_BATCH]
+            #                                                                           # last part added for optim
+            b_motion = d_normals[path_id + batch_id * N_PATHS +  t * N_PATHS * N_BATCH + N_BATCH * N_PATHS * N_STEPS * min_b]
 
             # post shared memory b_motion
             # shared[cuda.threadIdx.x] = d_normals[path_offset + cuda.threadIdx.x + t * N_PATHS]
@@ -63,6 +63,7 @@ def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
             # ki = snowball_path[t] + ds
             if snowball_path_holder[n][t+1] <= Ki[batch_id]:
                 ki = True
+            # cuda.syncthreads()
 
             if not mald:
                 for month in (0,1,2,3,4,5,6,7,8,9,10,11):                # need to do this instead because contains (in) and range are disabled
@@ -79,7 +80,8 @@ def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
                             break
             else: # if mald
                 break
-            
+            # cuda.syncthreads()
+
         if not earlyexit:       # to prevent early exit getting out of bdds error
             # did not get knocked up or down
             price = pot[batch_id]
@@ -93,6 +95,7 @@ def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
             d_s[n] = price * math.exp(-r[batch_id])
             snowball_path_holder[n][-1] = d_s[n]    
 
+        # cuda.syncthreads()
 #               make sure max_len is large enough or else divide by zero error occurs (at least 100 batches must be run)
 limiter = True
 
@@ -102,15 +105,17 @@ max_len = 1000000                    # hundo thousand data points, final speed i
 # max_len = 1000
 number_path = 500000
 batch = 1
+splitter = 10
     # i dont belive # of threads has like any impact on how fast it runs
 # threads = 256                     # total amount of suportable threads is arond 8-900. 256 supports 3 programs runing at same time
 threads = 128           
 seed  =1999 
 max_length = max_len
-N_PATHS = number_path
+N_PATHS = number_path // splitter
 N_STEPS = 365
 N_BATCH  =batch
 max_length = max_length // N_BATCH
+# max_length = max_length // 1
 percenter  =100       #  changes how often percent text gets shown & how many times things are saved
 percent = max_length // percenter
 
@@ -128,6 +133,8 @@ num_threads = threads
 
 Xss = []
 Yss = []
+Ys  =[]
+
 path = Path(__file__).parent.absolute()
                     ###          IMPORTANT VARAIBLE!!!!!
 folder = "snow_data_tensor_train"
@@ -151,7 +158,7 @@ now = datetime.now()
 print(f"current time is: {now}")
 
 for i in range(start,max_length+1):
-        randoms = cupy.random.normal(0,1, N_BATCH * N_PATHS * N_STEPS, dtype= cupy.float32)
+        randoms = cupy.random.normal(0,1, N_BATCH * N_PATHS * N_STEPS* splitter, dtype= cupy.float32)
 
         Xpre = cupy.random.rand(N_BATCH, 7, dtype = cupy.float32)
         #                        s_0,  Ki, Ko,  mu, sigma, pot, r
@@ -163,26 +170,35 @@ for i in range(start,max_length+1):
         X[:, 1] += Xpre[:,1]        # adding back the offset in Xpre after it gets overrided
         X[:, 2] += Xpre[:,2] 
 
+        # Ypre = cupy.zeros(N_BATCH, splitter, dtype = cupy.float32)
+
         snowball_path_holder.fill(0)
-                                        # d_s, s_0, Ki, Ko, mu, sigma, pot,r,
-                                        # d_normals, snowball_path_holder, MONTHS,
-                                        # N_STEPS, N_PATHS, N_BATCH):
-        monte_carlo_andtheholygrail_gpu[(num_blocks,), (num_threads,)](
-                                        output, X[:, 0], X[:, 1], X[:, 2], X[:, 3], 
-                                        X[:, 4], X[:, 5], X[:, 6],
-                                        randoms, snowball_path_holder, MONTHS,
-                                        N_STEPS, N_PATHS, N_BATCH)
-        # o = output.reshape(N_BATCH, N_PATHS)
-        # Y  =o.mean(axis =1)         # getting the average of each batch
-        cuda.synchronize()
-        # cupy.cuda.stream.get_current_stream().synchronize()
-        Y = output.mean()
+
+        for min_b in range(splitter):
+                                            # d_s, s_0, Ki, Ko, mu, sigma, pot,r,
+                                            # d_normals, snowball_path_holder, MONTHS,
+                                            # N_STEPS, N_PATHS, N_BATCH):
+            monte_carlo_andtheholygrail_gpu[(num_blocks,), (num_threads,)](
+                                            output, X[:, 0], X[:, 1], X[:, 2], X[:, 3], 
+                                            X[:, 4], X[:, 5], X[:, 6],
+                                            randoms, snowball_path_holder, MONTHS,
+                                            N_STEPS, N_PATHS, N_BATCH, min_b)
+            cuda.synchronize()
+            
+
+            Y = output.mean()
+            Ys.append(Y.tolist())       # Ys is a list of mc things for same X and we meaning all em together
+
+        # print (Ys)
         X = X.mean(axis=0)
         Xss.append(X.tolist())
-        Yss.append(Y.tolist())
-        # Xss.append(X)
-        # Yss.append(Y)
-        
+        # Yss.append(Ys.mean())           # hope this works???
+        Ys_avg = sum(Ys) / len(Ys)
+        Yss.append(Ys_avg)
+
+        # print(Yss)
+        Ys.clear()
+        # print(i)
         # torch.save(from_dlpack(X.toDlpack()), f"snow_data/snowX_data/tensor{i}.pt")
         # torch.save(from_dlpack(Y.toDlpack()), f"snow_data/snowY_data/tensor{i}.pt")
 
@@ -249,6 +265,7 @@ for i in range(start,max_length+1):
             currnum = len(os.listdir(dir))//2+1         #equivalent to curnum+=1 but allows for paralelel running
             # print(i/(percent), "percent of the way there! Time is now:", e-s, "secs")
             print(currnum, "percent of the way there! Time is now:", (e-s)/60/60, "hours")
+            # print(currnum, "percent of the way there! Time is now:", (e-s)/60, "mins")
             print(f"current time is: {now}")
             print("now saving tsnowX_{}.pt\n".format(currnum) )
             torch.save(tensorX, f"{dir}\\tsnowX_{currnum}.pt")
