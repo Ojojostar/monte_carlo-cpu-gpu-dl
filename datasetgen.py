@@ -101,6 +101,7 @@ limiter = True
 
 ###              IMPORTANT VARAIBLE!!!!!
 max_len = 1000000                    # hundo thousand data points, final speed is ~40 min for 1000 data.
+# max_len = 500000                    # hundo thousand data points, final speed is ~40 min for 1000 data.
 # max_len = 100                 
 # max_len = 1000
 number_path = 500000
@@ -119,6 +120,8 @@ max_length = max_length // N_BATCH
 percenter  =100       #  changes how often percent text gets shown & how many times things are saved
 percent = max_length // percenter
 
+batch_size = 10000      # 1000000/100
+batch_limit = 200       # equivalent to percenter in how it limits how many files are generated
 #           uncomment if u want less batches, the percent will just be wrong
 if percent == 0:
     percent = 1
@@ -137,7 +140,7 @@ Ys  =[]
 
 path = Path(__file__).parent.absolute()
                     ###          IMPORTANT VARAIBLE!!!!!
-folder = "snow_data_tensor_train"
+folder = "snow_data"
 # folder = "snow_data_tensor_test"              
 # folder = "snow_data_tensor"
 dir = f"{path}\{folder}" 
@@ -196,6 +199,15 @@ for i in range(start,max_length+1):
         Ys_avg = sum(Ys) / len(Ys)
         Yss.append(Ys_avg)
 
+        
+        # # print (Ys)
+        # X = X.mean(axis=0)
+        # Xss.append(torch.from_numpy(X))
+        # # Yss.append(Ys.mean())           # hope this works???
+        # Ys_avg = sum(Ys) / len(Ys)
+        # Yss.append(torch.tensor(Ys_avg, dtype=torch.float32))
+
+
         # print(Yss)
         Ys.clear()
         # print(i)
@@ -204,13 +216,17 @@ for i in range(start,max_length+1):
 
         # if(i%i==0):                   # for testing purposed only!!
         #not nesting the if statements so that first check can be easily commented out if run is very fast
-        if(i%(percent/10)==0):
+        
+        # if(i%(percent/10)==0):
+        if(i%(batch_size/10)==0):
             e = time.time()
             currnum = len(os.listdir(dir))//2+1
-            print(currnum -1 + (i/(percent))%1, "percent of the way there! Time is now:", (e-s)/60, "minutes")
-        if(i%percent==0):
+            print(currnum -1 + (i/(batch_size))%1, "parts/percent of the way there! Time is now:", (e-s)/60, "minutes")
+        # if(i%percent==0):
+        if(i%batch_size==0):
             if limiter:
-                if currnum > percenter:
+                # if currnum > percenter:
+                if currnum > batch_limit:
                     print("\nPremature exit, burunyu~")
                     print(" ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⢭⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
                           "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
@@ -264,7 +280,7 @@ for i in range(start,max_length+1):
             e = time.time()
             currnum = len(os.listdir(dir))//2+1         #equivalent to curnum+=1 but allows for paralelel running
             # print(i/(percent), "percent of the way there! Time is now:", e-s, "secs")
-            print(currnum, "percent of the way there! Time is now:", (e-s)/60/60, "hours")
+            print(currnum, "parts/percent of the way there! Time is now:", (e-s)/60/60, "hours")
             # print(currnum, "percent of the way there! Time is now:", (e-s)/60, "mins")
             print(f"current time is: {now}")
             print("now saving tsnowX_{}.pt\n".format(currnum) )
