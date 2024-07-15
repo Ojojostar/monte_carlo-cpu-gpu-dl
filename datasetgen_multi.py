@@ -5,6 +5,7 @@ import time
 import torch
 cupy.cuda.set_allocator(None)       # no clue
 from torch.utils.dlpack import from_dlpack
+import random
 
 import numba
 from numba import cuda
@@ -21,7 +22,7 @@ from datetime import datetime
 @cuda.jit               # defualt GPU
 def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
                                     d_normals, snowball_path_holder, MONTHS,
-                                    N_STEPS, N_PATHS, N_BATCH):
+                                    N_STEPS, N_PATHS, N_BATCH, min_b):
     
 
     # for shared memory (non)optimization
@@ -43,8 +44,8 @@ def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
         mald = False
         for t in range(N_STEPS):
             # pre shared memory b_motion    
-            #                                                   
-            b_motion = d_normals[path_id + batch_id * N_PATHS +  t * N_PATHS * N_BATCH]
+            #                                                                           # last part added for optim
+            b_motion = d_normals[path_id + batch_id * N_PATHS +  t * N_PATHS * N_BATCH + N_BATCH * N_PATHS * N_STEPS * min_b]
 
             # post shared memory b_motion
             # shared[cuda.threadIdx.x] = d_normals[path_offset + cuda.threadIdx.x + t * N_PATHS]
@@ -63,6 +64,7 @@ def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
             # ki = snowball_path[t] + ds
             if snowball_path_holder[n][t+1] <= Ki[batch_id]:
                 ki = True
+            # cuda.syncthreads()
 
             if not mald:
                 for month in (0,1,2,3,4,5,6,7,8,9,10,11):                # need to do this instead because contains (in) and range are disabled
@@ -79,7 +81,8 @@ def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
                             break
             else: # if mald
                 break
-            
+            # cuda.syncthreads()
+
         if not earlyexit:       # to prevent early exit getting out of bdds error
             # did not get knocked up or down
             price = pot[batch_id]
@@ -93,27 +96,35 @@ def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
             d_s[n] = price * math.exp(-r[batch_id])
             snowball_path_holder[n][-1] = d_s[n]    
 
+
+        # cuda.syncthreads()
 #               make sure max_len is large enough or else divide by zero error occurs (at least 100 batches must be run)
 limiter = True
 
 ###              IMPORTANT VARAIBLE!!!!!
 max_len = 1000000                    # hundo thousand data points, final speed is ~40 min for 1000 data.
+# max_len = 500000                    # hundo thousand data points, final speed is ~40 min for 1000 data.
 # max_len = 100                 
 # max_len = 1000
 number_path = 500000
 batch = 1
+splitter = 10
     # i dont belive # of threads has like any impact on how fast it runs
 # threads = 256                     # total amount of suportable threads is arond 8-900. 256 supports 3 programs runing at same time
 threads = 128           
 seed  =1999 
 max_length = max_len
-N_PATHS = number_path
+N_PATHS = number_path // splitter
 N_STEPS = 365
 N_BATCH  =batch
 max_length = max_length // N_BATCH
+# max_length = max_length // 1
 percenter  =100       #  changes how often percent text gets shown & how many times things are saved
 percent = max_length // percenter
 
+batch_size = 10000      # 1000000/100
+batch_size = 10      # test value
+batch_limit = 100       # equivalent to percenter in how it limits how many files are generated
 #           uncomment if u want less batches, the percent will just be wrong
 if percent == 0:
     percent = 1
@@ -124,8 +135,8 @@ num_threads = threads
 
 
                     ###          IMPORTANT VARAIBLE!!!!!
-folder = "snow_data_tensor_train"
-# folder = "snow_data_tensor_test"              
+# folder = "snow_data_tensor_train"
+folder = "snow_data_tensor_test"              
 # folder = "snow_data_tensor"
 path = Path(__file__).parent.absolute()
 dir = f"{path}\{folder}" 
@@ -140,8 +151,10 @@ def datesetgener(process):
 
     Xss = []
     Yss = []
+    Ys  =[]
 
-
+    print(f"Entering the hyperspace omnicron!!! Initalizing process {process}!!! Beep boop!!!")
+    time.sleep(random.randint(1,2))
 
     currnum = len(os.listdir(dir))//2+1
     print(header,"Adding files starting from", currnum, "\n")
@@ -157,19 +170,23 @@ def datesetgener(process):
     print(f"{header}current time is: {now}")
 
     for i in range(start,max_length+1):
-            randoms = cupy.random.normal(0,1, N_BATCH * N_PATHS * N_STEPS, dtype= cupy.float32)
+        randoms = cupy.random.normal(0,1, N_BATCH * N_PATHS * N_STEPS* splitter, dtype= cupy.float32)
 
-            Xpre = cupy.random.rand(N_BATCH, 7, dtype = cupy.float32)
-            #                        s_0,  Ki, Ko,  mu, sigma, pot, r
-            Xpre = Xpre * cupy.array([4,  -2,  1,  .01,  .15,  10, .01], dtype=cupy.float32)
-            X = Xpre +    cupy.array([8,   0,  0,  .02, .275,  15, .02], dtype=cupy.float32)
-            # Ki and Ko will be set down here instead of the previous line to make them relative to s_0.
-            X[:, 1] = X[:,0] -1         # overriding Ki and Ko 
-            X[:, 2] = X[:,0] -.2        
-            X[:, 1] += Xpre[:,1]        # adding back the offset in Xpre after it gets overrided
-            X[:, 2] += Xpre[:,2] 
+        Xpre = cupy.random.rand(N_BATCH, 7, dtype = cupy.float32)
+        #                        s_0,  Ki, Ko,  mu, sigma, pot, r
+        Xpre = Xpre * cupy.array([4,  -2,  1,  .01,  .15,  10, .01], dtype=cupy.float32)
+        X = Xpre +    cupy.array([8,   0,  0,  .02, .275,  15, .02], dtype=cupy.float32)
+        # Ki and Ko will be set down here instead of the previous line to make them relative to s_0.
+        X[:, 1] = X[:,0] -1         # overriding Ki and Ko 
+        X[:, 2] = X[:,0] -.2        
+        X[:, 1] += Xpre[:,1]        # adding back the offset in Xpre after it gets overrided
+        X[:, 2] += Xpre[:,2] 
 
-            snowball_path_holder.fill(0)
+        # Ypre = cupy.zeros(N_BATCH, splitter, dtype = cupy.float32)
+
+        snowball_path_holder.fill(0)
+
+        for min_b in range(splitter):
                                             # d_s, s_0, Ki, Ko, mu, sigma, pot,r,
                                             # d_normals, snowball_path_holder, MONTHS,
                                             # N_STEPS, N_PATHS, N_BATCH):
@@ -177,15 +194,31 @@ def datesetgener(process):
                                             output, X[:, 0], X[:, 1], X[:, 2], X[:, 3], 
                                             X[:, 4], X[:, 5], X[:, 6],
                                             randoms, snowball_path_holder, MONTHS,
-                                            N_STEPS, N_PATHS, N_BATCH)
-            # o = output.reshape(N_BATCH, N_PATHS)
-            # Y  =o.mean(axis =1)         # getting the average of each batch
+                                            N_STEPS, N_PATHS, N_BATCH, min_b)
             cuda.synchronize()
-            # cupy.cuda.stream.get_current_stream().synchronize()
+            
+
             Y = output.mean()
-            X = X.mean(axis=0)
-            Xss.append(X.tolist())
-            Yss.append(Y.tolist())
+            Ys.append(Y.tolist())       # Ys is a list of mc things for same X and we meaning all em together
+
+        # print (Ys)
+        X = X.mean(axis=0)
+        Xss.append(X.tolist())
+        # Yss.append(Ys.mean())           # hope this works???
+        Ys_avg = sum(Ys) / len(Ys)
+        Yss.append(Ys_avg)
+
+        
+        # # print (Ys)
+        # X = X.mean(axis=0)
+        # Xss.append(torch.from_numpy(X))
+        # # Yss.append(Ys.mean())           # hope this works???
+        # Ys_avg = sum(Ys) / len(Ys)
+        # Yss.append(torch.tensor(Ys_avg, dtype=torch.float32))
+
+
+        # print(Yss)
+        Ys.clear()
             # Xss.append(X)
             # Yss.append(Y)
             
@@ -194,58 +227,62 @@ def datesetgener(process):
 
             # if(i%i==0):                   # for testing purposed only!!
             #not nesting the if statements so that first check can be easily commented out if run is very fast
-            if(i%(percent/10)==0):
-                e = time.time()
-                currnum = len(os.listdir(dir))//2+1
-                print(header, currnum -1 + (i/(percent))%1, "percent of the way there! Time is now:", (e-s)/60, "minutes")
-            if(i%percent==0):
-                if limiter:
-                    if currnum > percenter:
-                        print(header,"\nPremature exit, burunyu~")
-                        print(" ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⢭⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣻⣶⣝⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣸⣿⣿⣿⣾⣿⣿⣿⣿⣿⡿⣫⣶⣿⣿⣿⢸⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣟⣿⣿⣿⣿⣿⣿⣮⢿⣿⣝⣿⣿⡿⢟⣛⣭⣭⣝⣿⡏⢹⣿⣿⣻⣾⣿⢟⣿⣿⣿⣿⣿⣿⣿⣼⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⡻⣼⣿⣟⣯⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣸⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢿⣿⣿⣿⣿⣿⣯⢿⣿⣿⡇⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣳⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣮⣿⣿⣿⣿⣿⣿⣿⡇⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣧⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢻⣿⣿⣿⣿⣿⣿⣽⣿⣿⣿⣿⣷⠻⣿⣿⣿⣻⣾⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⢹⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢻⣿⣿⣿⣿⣿⣷⣿⣿⣿⣻⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢇⣿⣿⣿⣿⣿⣿⣿⣿⣇⣿⣿⣿⣿⣿⣿⣷⣿⣿⡼⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⢻⣿⣿⣿⣿⣿⡏⣿⣿⣿⣸⣿⣿⣿⣿⣿⣯⡇⣿⣿⣿⣿⣿⣿⣿⣿⣿⡾⣿⣿⣿⣿⣿⣿⣿⣿⣿⢹⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣏⣿⣿⣿⣿⣿⣿⢻⣿⣻⣿⢸⣿⣿⣿⣿⣻⣿⣿⣿⣿⣿⣿⣿⡟⣿⣿⣇⣿⣼⣿⣿⣿⠀⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⢸⣿⣽⣿⣿⣿⡇⣿⣛⡍⠀⣿⣿⣶⣼⢿⣿⣿⡿⣿⣻⣿⠸⣛⣿⣼⣻⣃⠀⣿⣿⣿⣿⣿⡞⣿⣿\n",
-                                "⣿⣿⣿⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢳⣿⣿⣿⠀⠀⠀⣿⣿⣿⣿⣿⡽⣿⣟⣿⠀⠀⢸⣿⣿⣿⣿⣿⢻⣿⣿⣿⣼⣿⣿⣿\n",
-                                "⣿⣿⣏⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⢸⣿⣿⣿⣿⣿⡇⣿⣿⣿⡇⣿⡇⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡼⣿⣿⣿⠀⠀⢠⣿⣿⣿⣿⣿⣳⣿⣻⣿⠀⠀⣿⣿⣿⣿⣿⣟⣿⣿⣿⣿⡇⣻⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⡟⣿⣿⣿⣿⡟⣿⣿⣻⣿⣤⣿⣿⣿⢟⣿⣿⣿⣿⣿⣿⣷⣻⣿⣟⣯⣾⣿⢷⣿⣿⣿⣿⣿⣿⣿⣅\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⠃⠀⢿⣿⣿⣿⠀⢿⣿⣿⣿⣿⣿⣿⡿⣿⣿⣿⣿⣷⣿⣿⣿⣿⣿⣿⣿⣿⠁⠀⣿⣿⣿⣿⢸⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣧⣿⣿⡇⠀⠀⣿⣿⡏⠀⠀⠀⠻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠁⠀⠀⢸⣿⣝⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣿⣿⣿⣿⡆⠀⠀⢰⡀⠀⠀⠙⠻⠿⣿⣿⣿⡿⠟⠋⠁⠀⠀⣿⠀⠀⠀⣿⣿⣿⣿⣷⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣾⣿⣿⣴⣿⣿⣿⣿⣿⣿⣿⣺⣿⣮⣦⠀⢸⣿⣿⣷⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⡿⣵⣿⣮⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣳⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣞⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣟⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⢹⣿⣿⣿⣿⣼⣿⣿⣿⣿⣿⣿⣿⣿⣳⣿⣿⣿⣿⣿⣧⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⢸⣿⣿⣿⡇⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣯⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⡿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢻⣝⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢘⣶⣶⣯⢿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣻⣿⣿⣿⣿⣝⣿⣿⣿⣿⣿⣿⣿⣿⣿⣻⣿⣦⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⢇⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣯⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣧⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠟⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣯⣻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⠀⠀⠉⠉⠛⠛⠛⠉⠉⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⡿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣝⠻⠿⣛⣾⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣾⣿⣿⣿⣿⣿⠟⣶⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡏⠀⠀⠀⠀⠀⠀⠀⣶⣄⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⣼⣿⣿⣿⣿⣿⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⠀⠀⣿⣿⣿⣿⣿⠇⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠈⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠃⠀⠀⠀⠀⠀⣼⣿⣿⣿⡟⠀⠀⠀⠀⠀⠀⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣷⣄⣠⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣀⠀⣠⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
-                                "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣧⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n")
-                        # Xss.pop()
-                        # Yss.pop()
-                        break
+     
+            # if(i%(percent/10)==0):
+        if(i%(batch_size/10)==0):
+            e = time.time()
+            currnum = len(os.listdir(dir))//2+1
+            print(header, currnum -1 + (i/(batch_size))%1, "parts/percent of the way there! Time is now:", (e-s)/60, "minutes")
+        # if(i%percent==0):
+        if(i%batch_size==0):
+            if limiter:
+                # if currnum > percenter:
+                if currnum > batch_limit:
+                    print(header, "\nPremature exit, burunyu~")
+                    print(" ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⢭⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                        "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣻⣶⣝⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣸⣿⣿⣿⣾⣿⣿⣿⣿⣿⡿⣫⣶⣿⣿⣿⢸⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣟⣿⣿⣿⣿⣿⣿⣮⢿⣿⣝⣿⣿⡿⢟⣛⣭⣭⣝⣿⡏⢹⣿⣿⣻⣾⣿⢟⣿⣿⣿⣿⣿⣿⣿⣼⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⡻⣼⣿⣟⣯⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣸⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢿⣿⣿⣿⣿⣿⣯⢿⣿⣿⡇⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣳⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣮⣿⣿⣿⣿⣿⣿⣿⡇⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣧⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢻⣿⣿⣿⣿⣿⣿⣽⣿⣿⣿⣿⣷⠻⣿⣿⣿⣻⣾⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⢹⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢻⣿⣿⣿⣿⣿⣷⣿⣿⣿⣻⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢇⣿⣿⣿⣿⣿⣿⣿⣿⣇⣿⣿⣿⣿⣿⣿⣷⣿⣿⡼⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⢻⣿⣿⣿⣿⣿⡏⣿⣿⣿⣸⣿⣿⣿⣿⣿⣯⡇⣿⣿⣿⣿⣿⣿⣿⣿⣿⡾⣿⣿⣿⣿⣿⣿⣿⣿⣿⢹⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣏⣿⣿⣿⣿⣿⣿⢻⣿⣻⣿⢸⣿⣿⣿⣿⣻⣿⣿⣿⣿⣿⣿⣿⡟⣿⣿⣇⣿⣼⣿⣿⣿⠀⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⢸⣿⣽⣿⣿⣿⡇⣿⣛⡍⠀⣿⣿⣶⣼⢿⣿⣿⡿⣿⣻⣿⠸⣛⣿⣼⣻⣃⠀⣿⣿⣿⣿⣿⡞⣿⣿\n",
+                            "⣿⣿⣿⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢳⣿⣿⣿⠀⠀⠀⣿⣿⣿⣿⣿⡽⣿⣟⣿⠀⠀⢸⣿⣿⣿⣿⣿⢻⣿⣿⣿⣼⣿⣿⣿\n",
+                            "⣿⣿⣏⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⢸⣿⣿⣿⣿⣿⡇⣿⣿⣿⡇⣿⡇⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡼⣿⣿⣿⠀⠀⢠⣿⣿⣿⣿⣿⣳⣿⣻⣿⠀⠀⣿⣿⣿⣿⣿⣟⣿⣿⣿⣿⡇⣻⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⡟⣿⣿⣿⣿⡟⣿⣿⣻⣿⣤⣿⣿⣿⢟⣿⣿⣿⣿⣿⣿⣷⣻⣿⣟⣯⣾⣿⢷⣿⣿⣿⣿⣿⣿⣿⣅\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⠃⠀⢿⣿⣿⣿⠀⢿⣿⣿⣿⣿⣿⣿⡿⣿⣿⣿⣿⣷⣿⣿⣿⣿⣿⣿⣿⣿⠁⠀⣿⣿⣿⣿⢸⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣧⣿⣿⡇⠀⠀⣿⣿⡏⠀⠀⠀⠻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠁⠀⠀⢸⣿⣝⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣿⣿⣿⣿⡆⠀⠀⢰⡀⠀⠀⠙⠻⠿⣿⣿⣿⡿⠟⠋⠁⠀⠀⣿⠀⠀⠀⣿⣿⣿⣿⣷⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣾⣿⣿⣴⣿⣿⣿⣿⣿⣿⣿⣺⣿⣮⣦⠀⢸⣿⣿⣷⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⡿⣵⣿⣮⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣳⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣞⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣟⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⢹⣿⣿⣿⣿⣼⣿⣿⣿⣿⣿⣿⣿⣿⣳⣿⣿⣿⣿⣿⣧⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⢸⣿⣿⣿⡇⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣯⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⡿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢻⣝⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢘⣶⣶⣯⢿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣻⣿⣿⣿⣿⣝⣿⣿⣿⣿⣿⣿⣿⣿⣿⣻⣿⣦⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⢇⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣯⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣧⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠟⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣯⣻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⠀⠀⠉⠉⠛⠛⠛⠉⠉⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⡿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣝⠻⠿⣛⣾⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣾⣿⣿⣿⣿⣿⠟⣶⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡏⠀⠀⠀⠀⠀⠀⠀⣶⣄⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⣼⣿⣿⣿⣿⣿⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⠀⠀⣿⣿⣿⣿⣿⠇⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠈⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠃⠀⠀⠀⠀⠀⣼⣿⣿⣿⡟⠀⠀⠀⠀⠀⠀⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣷⣄⣠⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣀⠀⣠⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n",
+                            "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣧⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿\n")
+                    # Xss.pop()
+                    # Yss.pop()
+                    break
                 
                 tensorX = np.array(Xss)
                 tensorY = np.array(Yss)
@@ -286,11 +323,12 @@ import multiprocessing
 
 if __name__ == "__main__": 
 
-    num_processes = 3
-    processes = [multiprocessing.Process(target = datesetgener, args = (i)) for i in range(1, num_processes+1) ]
+    num_processes = 6
+    processes = [multiprocessing.Process(target = datesetgener, args = [i]) for i in range(1, num_processes+1) ]
 
     for process in processes:
         process.start()
+        time.sleep(5)      # spacin things out a bit
         
     for process in processes:
         process.join()

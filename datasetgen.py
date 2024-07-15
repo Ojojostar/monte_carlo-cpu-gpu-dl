@@ -85,9 +85,7 @@ def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
         if not earlyexit:       # to prevent early exit getting out of bdds error
             # did not get knocked up or down
             price = pot[batch_id]
-            # t  =T 
-                        # CAN'T USE T CUZ CUDA IS FUCKING SHIT so use -1 instead
-                        # or not ig T works now :sob:
+            
             if ki and snowball_path_holder[n][N_STEPS] <= s_0[batch_id]:          # blo got knocked down and never recovered
                 price = snowball_path_holder[n][N_STEPS] - s_0[batch_id]
             elif ki and snowball_path_holder[n][N_STEPS] <= Ko[batch_id]:          # blo got knocked down for a bit but finished above Ki
@@ -121,7 +119,7 @@ percenter  =100       #  changes how often percent text gets shown & how many ti
 percent = max_length // percenter
 
 batch_size = 10000      # 1000000/100
-batch_limit = 200       # equivalent to percenter in how it limits how many files are generated
+batch_limit = 500       # equivalent to percenter in how it limits how many files are generated
 #           uncomment if u want less batches, the percent will just be wrong
 if percent == 0:
     percent = 1
