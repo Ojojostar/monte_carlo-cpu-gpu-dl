@@ -123,7 +123,7 @@ percenter  =100       #  changes how often percent text gets shown & how many ti
 percent = max_length // percenter
 
 batch_size = 10000      # 1000000/100
-batch_size = 10      # test value
+# batch_size = 10      # test value
 batch_limit = 100       # equivalent to percenter in how it limits how many files are generated
 #           uncomment if u want less batches, the percent will just be wrong
 if percent == 0:

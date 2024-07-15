@@ -17,6 +17,8 @@ from datetime import datetime
 # code was written with batch of size 1 in mind and number of data points gets a bit off the inputed amount
 # if the division ends in a decimal
 
+###     CHECK OUT DATASETGEN_MULTI FOR A SMALL OPTIMIZATION WHEN ACTUALLY RUNNING CODE, OR JUST RUN THIS IN MULTIPLE COMMAND PROMPTS
+
 
 @cuda.jit               # defualt GPU
 def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
@@ -85,7 +87,6 @@ def monte_carlo_andtheholygrail_gpu(d_s, s_0, Ki, Ko, mu, sigma, pot,r,
         if not earlyexit:       # to prevent early exit getting out of bdds error
             # did not get knocked up or down
             price = pot[batch_id]
-            
             if ki and snowball_path_holder[n][N_STEPS] <= s_0[batch_id]:          # blo got knocked down and never recovered
                 price = snowball_path_holder[n][N_STEPS] - s_0[batch_id]
             elif ki and snowball_path_holder[n][N_STEPS] <= Ko[batch_id]:          # blo got knocked down for a bit but finished above Ki
