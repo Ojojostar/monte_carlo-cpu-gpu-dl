@@ -131,10 +131,10 @@ max_len = 1000000                    # hundo thousand data points, final speed i
 # max_len = 100                 
 # max_len = 1000
 number_path = 500000             # regular use number
-# number_path = 5000000            # for accurate validation data
+number_path = 10000000            # for accurate validation data (20 times more paths)
 batch = 1
 splitter = 10
-multiplier = 1         ## similar to splitter but generates less randoms at a single time, decreasing amount of memory used
+multiplier = 20         ## similar to splitter but generates less randoms at a single time, decreasing amount of memory used
                         # IMPORTANT!!! please shift multiplier according to paths. if path x 10, mult x10. This will keep things consistent.
                         # overall, tweaking of splitter is required to find fastest computation speed and just keep mult in line with paths.  
 multiplier = number_path // 500000
@@ -153,6 +153,7 @@ percenter  =100       #  changes how often percent text gets shown & how many ti
 percent = max_length // percenter
 
 batch_size = 10000      # 1000000/100
+batch_size = batch_size/multiplier      # using a smaller batch to compensate for x20 mult for larger path nums
 # batch_size = 100      # 1000000/100               for testing smaller batches
 # batch_limit = 500       # equivalent to percenter in how it limits how many files are generated
 batch_limit = 500          # smaller number for training accurate validation
@@ -176,9 +177,10 @@ Ys  =[]
 
 path = Path(__file__).parent.absolute()
                     ###          IMPORTANT VARAIBLE!!!!!
-folder = "snow_data2"
+# folder = "snow_data2"
 # folder = "snow_data_tensor_test2"              
-# folder = "snow_data_tensor2"
+# folder = "snow_data_tensor2"         
+folder = "snow_data_morepath2"
 dir = f"{path}\{folder}" 
 
 print("\nPRINGITN CURRENT DIR", dir)
